@@ -41,7 +41,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ runner.tool_cache }}/ps5-payload-dev.tar.gz
-        key: ${{ runner.os }}-ps5-payload-dev-latest
+        key: ${{ runner.os }}-ps5-payload-dev-latest-v2
 
     - name: Download PS5 SDK
       if: steps.cache-sdk.outputs.cache-hit != 'true'
