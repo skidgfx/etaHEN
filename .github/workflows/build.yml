@@ -1,0 +1,118 @@
+name: Build etaHEN
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
+  PS5_SYSROOT: /opt/ps5-payload-sdk/target
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: Source Code
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install host packages
+      working-directory: ${{ github.workspace }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          cmake python3 xz-utils wget curl ca-certificates unzip clang lld binutils
+
+    - name: Cache PS5 SDK tarball
+      id: cache-sdk
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.tool_cache }}/ps5-payload-dev.tar.gz
+        key: ${{ runner.os }}-ps5-payload-dev-latest
+
+    - name: Download PS5 SDK
+      if: steps.cache-sdk.outputs.cache-hit != 'true'
+      working-directory: ${{ github.workspace }}
+      run: |
+        mkdir -p "${{ runner.tool_cache }}"
+        curl -sL https://github.com/ps5-payload-dev/pacbrew-repo/releases/latest/download/ps5-payload-dev.tar.gz \
+          -o "${{ runner.tool_cache }}/ps5-payload-dev.tar.gz"
+
+    - name: Install PS5 SDK
+      working-directory: ${{ github.workspace }}
+      run: |
+        sudo tar xf "${{ runner.tool_cache }}/ps5-payload-dev.tar.gz" -C /
+        echo "PATH=${PS5_PAYLOAD_SDK}/bin:${PATH}" >> "$GITHUB_ENV"
+
+    - name: Fetch bundled payloads
+      run: |
+        set -euo pipefail
+        mkdir -p daemon/assets util/assets bootstrapper/assets
+
+        curl -sL https://github.com/ps5-payload-dev/elfldr/releases/latest/download/elfldr-ps5.elf \
+          -o util/assets/elfldr.elf
+
+        curl -sL https://github.com/EchoStretch/kstuff/releases/latest/download/kstuff.elf \
+          -o bootstrapper/assets/kstuff.elf
+
+        curl -sL https://github.com/EchoStretch/ps5-app-dumper/releases/latest/download/ps5-app-dumper.elf \
+          -o daemon/assets/ps5-app-dumper.elf
+
+        curl -sL https://github.com/GoldHEN/ps5debug/releases/latest/download/ps5debug.elf \
+          -o daemon/assets/ps5debug.elf
+
+        for f in \
+          util/assets/elfldr.elf \
+          bootstrapper/assets/kstuff.elf \
+          daemon/assets/ps5-app-dumper.elf \
+          daemon/assets/ps5debug.elf \
+          bootstrapper/assets/fps.prx
+        do
+          test -s "$f" || { echo "missing or empty: $f" >&2; exit 1; }
+          echo "ok $f ($(wc -c < "$f") bytes)"
+        done
+
+    - name: Build Byepervisor hen.bin
+      env:
+        # hen Makefile concatenates this with "include/freebsd" (needs trailing slash)
+        PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk/
+      run: |
+        make -C bootstrapper/Byepervisor/hen -j"$(nproc)" \
+          CXX="${PS5_PAYLOAD_SDK}bin/prospero-clang++" \
+          CC="${PS5_PAYLOAD_SDK}bin/prospero-clang"
+        test -s bootstrapper/Byepervisor/hen/hen.bin
+
+    - name: Configure
+      run: |
+        "${PS5_PAYLOAD_SDK}/bin/prospero-cmake" -S . -B build -DV_FW=0
+
+    - name: Build
+      run: |
+        cmake --build build -j"$(nproc)"
+
+    - name: Upload etaHEN binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: etaHEN binaries
+        if-no-files-found: error
+        path: |
+          Source Code/bin/etaHEN.elf
+          Source Code/bin/bootstrapper.elf.lzma
+          Source Code/bin/daemon.elf
+          Source Code/bin/util.elf
+          Source Code/bin/test.elf
+          Source Code/daemon/assets/shellui.elf
+          Source Code/daemon/assets/fps_elf.elf
